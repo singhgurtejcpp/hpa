@@ -124,11 +124,11 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-      - name: Mock SonarQube result (used until real Sonar is configured)
-        if: ${{ env.SONAR_TOKEN == '' }}
-        run: |
-          echo "SONAR_TOKEN not set — generating mock Sonar result."
-          echo "Bugs: 0 | Vulnerabilities: 0 | Code Smells: 3 | Coverage: 92%"
+      # - name: Mock SonarQube result (used until real Sonar is configured)
+      #   if: ${{ env.SONAR_TOKEN == '' }}
+      #   run: |
+      #     echo "SONAR_TOKEN not set — generating mock Sonar result."
+      #     echo "Bugs: 0 | Vulnerabilities: 0 | Code Smells: 3 | Coverage: 92%"
 
   # ---------------------------------------------------------------------
   # 4. DEPLOY (simulated)
