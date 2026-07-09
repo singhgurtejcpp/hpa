@@ -8,7 +8,7 @@ DevOps Change Velocity** pipeline visibility.
 This repo assumes ServiceNow is configured to **pull** data from GitHub —
 i.e. you have a GitHub tool set up in ServiceNow, authenticated with a
 classic Personal Access Token, and ServiceNow polls GitHub's API on its own
-schedule to discover repos, branches, commits, and workflow runs.
+schedule discover repos, branches, commits, and workflow runs.
 
 Because of that, **this workflow has no ServiceNow-facing steps and needs no
 GitHub secrets.** It's a plain CI pipeline. ServiceNow does the work of
