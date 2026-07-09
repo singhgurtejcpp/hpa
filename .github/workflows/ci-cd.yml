@@ -7,13 +7,14 @@ name: CI/CD Pipeline
 #
 # Change record creation below uses the PUSH model instead: the
 # ServiceNow/servicenow-devops-change GitHub Action calls into ServiceNow
-# directly, authenticating as a dedicated ServiceNow integration user
-# (github-dcv-integration) via username/password, rather than a token.
+# directly, authenticating via a REST API Key token (not username/password —
+# this instance enforces SSO, which blocks basic-auth login for any user,
+# including dedicated integration accounts).
 # Required GitHub repo secrets for this:
-#   SN_DEVOPS_USER      - ServiceNow integration user id
-#   SN_DEVOPS_PASSWORD  - that user's password
-#   SN_INSTANCE_URL     - e.g. https://cppinvqa.service-now.com
-#   SN_ORCHESTRATION_TOOL_ID - sys_id of the GitHub tool in DevOps > Tools
+#   SN_DEVOPS_INTEGRATION_TOKEN - REST API Key token (System Web Services >
+#                                 API Access Policies > REST API Key)
+#   SN_INSTANCE_URL             - e.g. https://cppinvqa.service-now.com
+#   SN_ORCHESTRATION_TOOL_ID    - sys_id of the GitHub tool in DevOps > Tools
 
 on:
   push:
@@ -160,8 +161,7 @@ jobs:
       - name: ServiceNow Change - Standard (auto-approved)
         uses: ServiceNow/servicenow-devops-change@v6.1.0
         with:
-          devops-integration-user-name: ${{ secrets.SN_DEVOPS_USER }}
-          devops-integration-user-password: ${{ secrets.SN_DEVOPS_PASSWORD }}
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
           instance-url: ${{ secrets.SN_INSTANCE_URL }}
           tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           context-github: ${{ toJSON(github) }}
@@ -196,8 +196,7 @@ jobs:
       - name: ServiceNow Change - Normal (requires approval)
         uses: ServiceNow/servicenow-devops-change@v6.1.0
         with:
-          devops-integration-user-name: ${{ secrets.SN_DEVOPS_USER }}
-          devops-integration-user-password: ${{ secrets.SN_DEVOPS_PASSWORD }}
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
           instance-url: ${{ secrets.SN_INSTANCE_URL }}
           tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           context-github: ${{ toJSON(github) }}
