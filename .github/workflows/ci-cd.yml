@@ -1,0 +1,257 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop, 'feature/**']
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. BUILD & UNIT TEST
+  # ---------------------------------------------------------------------
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    outputs:
+      build-number: ${{ github.run_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run unit tests with coverage
+        run: npm test
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+      - name: Register Artifact in ServiceNow
+        uses: ServiceNow/servicenow-devops-register-artifact@v6.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'Build'
+          artifacts: |
+            [
+              {
+                "name": "devops-velocity-demo",
+                "version": "1.${{ github.run_number }}",
+                "semanticVersion": "1.${{ github.run_number }}.0",
+                "repositoryName": "${{ github.repository }}"
+              }
+            ]
+
+  # ---------------------------------------------------------------------
+  # 2. SECURITY SCANNING (mocked for now — swap in a real scanner later)
+  # ---------------------------------------------------------------------
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run mock security scan
+        id: mock-scan
+        run: |
+          echo "Running mock SAST scan..."
+          mkdir -p security-reports
+          cat > security-reports/results.json << 'EOF'
+          {
+            "scanner": "mock-sast",
+            "critical": 0,
+            "high": 0,
+            "medium": 2,
+            "low": 5,
+            "status": "passed"
+          }
+          EOF
+          echo "Mock scan complete — 0 critical, 0 high findings."
+          cat security-reports/results.json
+
+      - name: Upload security report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-reports/
+
+      # NOTE: This step sends results to ServiceNow using a generic scanner
+      # payload. Once you have a real SAST/DAST tool, swap the "scanner"
+      # value and the metrics above for real tool output — the ServiceNow
+      # side (change policies gated on security results) will work the same.
+      - name: Send Security Results to ServiceNow
+        uses: ServiceNow/servicenow-devops-security-result@v6.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'Security Scan'
+          security-result-attributes: |
+            {
+              "scanner": "Veracode",
+              "applicationName": "devops-velocity-demo",
+              "buildVersion": "1.${{ github.run_number }}"
+            }
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------
+  # 3. SONARQUBE CODE QUALITY SCAN (mock-tolerant)
+  # ---------------------------------------------------------------------
+  sonar-scan:
+    name: SonarQube Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests for coverage
+        run: npm test
+
+      # Real SonarCloud/SonarQube scan. Requires SONAR_TOKEN + SONAR_HOST_URL
+      # secrets to be set. If they aren't set yet, this step is skipped and
+      # a mock result is generated instead so the pipeline stays green.
+      - name: SonarQube Scan
+        id: sonar
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: Mock SonarQube result (used until real Sonar is configured)
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: |
+          echo "SONAR_TOKEN not set — generating mock Sonar result."
+          echo "Bugs: 0 | Vulnerabilities: 0 | Code Smells: 3 | Coverage: 92%"
+
+      - name: Send Sonar Results to ServiceNow
+        uses: ServiceNow/servicenow-devops-sonar@v6.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'SonarQube Scan'
+          sonar-host-url: ${{ secrets.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------
+  # 4a. CHANGE CREATION — AUTOMATED (develop / feature branches)
+  #     "Standard change" style — no manual approval required.
+  # ---------------------------------------------------------------------
+  change-auto:
+    name: Create Standard Change (Auto)
+    runs-on: ubuntu-latest
+    needs: [security-scan, sonar-scan]
+    if: github.ref != 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ServiceNow Change - Standard (auto-approved)
+        uses: ServiceNow/servicenow-devops-change@v6.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'Create Standard Change (Auto)'
+          change-request: |
+            {
+              "setCloseCode": "true",
+              "autoCloseChange": true,
+              "attributes": {
+                "short_description": "Automated deploy - ${{ github.ref_name }} - build ${{ github.run_number }}",
+                "description": "Standard change auto-created for non-prod branch ${{ github.ref_name }}.",
+                "implementation_plan": "Automated CI/CD deploy via GitHub Actions.",
+                "backout_plan": "Redeploy previous successful build artifact.",
+                "test_plan": "Unit tests, security scan, and SonarQube scan executed in pipeline."
+              }
+            }
+
+  # ---------------------------------------------------------------------
+  # 4b. CHANGE CREATION — MANUAL APPROVAL (main branch)
+  #     "Normal change" style — pipeline pauses until change is approved
+  #     in ServiceNow. The action polls until state changes.
+  # ---------------------------------------------------------------------
+  change-manual:
+    name: Create Normal Change (Manual Approval)
+    runs-on: ubuntu-latest
+    needs: [security-scan, sonar-scan]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ServiceNow Change - Normal (requires approval)
+        uses: ServiceNow/servicenow-devops-change@v6.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'Create Normal Change (Manual Approval)'
+          change-request: |
+            {
+              "attributes": {
+                "short_description": "Production deploy - build ${{ github.run_number }}",
+                "description": "Normal change requiring manual approval for production deploy from main.",
+                "implementation_plan": "Automated CI/CD deploy via GitHub Actions once change is approved.",
+                "backout_plan": "Redeploy previous successful production artifact.",
+                "test_plan": "Unit tests, security scan, and SonarQube scan executed and attached in pipeline."
+              }
+            }
+        # This step will pause the workflow (poll) until the change request
+        # is approved (or rejected) in ServiceNow.
+
+  # ---------------------------------------------------------------------
+  # 5. DEPLOY (runs only after the relevant change gate passes)
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [change-auto, change-manual]
+    if: always() && (needs.change-auto.result == 'success' || needs.change-manual.result == 'success')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy (simulated)
+        run: |
+          echo "Deploying build ${{ github.run_number }} from branch ${{ github.ref_name }}"
+          echo "This is a simulated deploy step — replace with real deploy commands."
