@@ -6,7 +6,7 @@ name: CI/CD Pipeline
 # data from GitHub using a classic PAT on the ServiceNow side (a GitHub tool
 # configured in ServiceNow). That pull-based discovery is what surfaces this
 # pipeline's runs, branches, and commits in ServiceNow — nothing here needs
-# to push ServiceNow for that to work.
+# to push to ServiceNow for that to work.
 #
 # If you later want security-scan results or change records to appear as
 # first-class ServiceNow records (not just "a workflow ran"), that requires
