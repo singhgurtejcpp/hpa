@@ -1,52 +1,48 @@
 # DevOps Change Velocity Demo
 
-A minimal Node.js repo + GitHub Actions pipeline built to exercise **ServiceNow
-DevOps Change Velocity**: pipeline visibility, security scan results,
-SonarQube results, and automated vs. manually-approved change records.
+A minimal Node.js repo + GitHub Actions pipeline used to test **ServiceNow
+DevOps Change Velocity** pipeline visibility.
+
+## Integration model: pull, not push
+
+This repo assumes ServiceNow is configured to **pull** data from GitHub —
+i.e. you have a GitHub tool set up in ServiceNow, authenticated with a
+classic Personal Access Token, and ServiceNow polls GitHub's API on its own
+schedule to discover repos, branches, commits, and workflow runs.
+
+Because of that, **this workflow has no ServiceNow-facing steps and needs no
+GitHub secrets.** It's a plain CI pipeline. ServiceNow does the work of
+noticing it exists and pulling in its run history.
+
+This is different from the **push** model, where GitHub Actions actively
+calls into ServiceNow (via the `ServiceNow/servicenow-devops-*` custom
+Actions) to create change records or attach security/Sonar results in real
+time. That model needs its own GitHub secrets
+(`SN_DEVOPS_INTEGRATION_TOKEN`, `SN_INSTANCE_URL`,
+`SN_ORCHESTRATION_TOOL_ID`) that authenticate GitHub *to* ServiceNow — the
+reverse direction of the PAT you already set up. This repo intentionally
+does not use that model yet.
 
 ## What the pipeline does
 
 ```
-build ──┬──▶ security-scan ──┐
-         └──▶ sonar-scan ─────┼──▶ change-auto (non-main branches)  ──▶ deploy
-                              └──▶ change-manual (main branch, needs approval) ──▶ deploy
+build ──▶ security-scan ──┐
+       └──▶ sonar-scan ────┼──▶ deploy
 ```
 
 | Job              | Purpose                                                        |
 |------------------|-----------------------------------------------------------------|
-| `build`          | npm install, lint, unit tests + coverage, registers artifact in ServiceNow |
-| `security-scan`  | Mock SAST scan today (swap for a real tool later), sends results to ServiceNow |
-| `sonar-scan`     | Real SonarCloud/SonarQube scanner if `SONAR_TOKEN` is set, otherwise a mock result — either way sends results to ServiceNow |
-| `change-auto`    | Runs on `develop`/`feature/*` — creates a **standard change**, auto-closed, no approval needed |
-| `change-manual`  | Runs on `main` — creates a **normal change** and the workflow **pauses until it's approved** in ServiceNow |
-| `deploy`         | Simulated deploy step, runs once the relevant change gate passes |
+| `build`          | npm install, lint, unit tests + coverage                        |
+| `security-scan`  | Mock SAST scan (swap for a real tool later)                     |
+| `sonar-scan`     | Real SonarCloud/SonarQube scanner if `SONAR_TOKEN` is set, otherwise a mock result |
+| `deploy`         | Simulated deploy step                                            |
 
 ## Required GitHub secrets
 
-You said your `sn_devops` integration (token, tool ID, instance URL) is already
-configured. Confirm these secret names match what your workflow expects
-(Settings → Secrets and variables → Actions):
-
-- `SN_DEVOPS_INTEGRATION_TOKEN`
-- `SN_INSTANCE_URL`
-- `SN_ORCHESTRATION_TOOL_ID`
-
-Optional, for real SonarQube/SonarCloud scanning (leave unset to keep using
-the mock path):
+**None**, by design — see above. If you later set up SonarCloud, add:
 
 - `SONAR_TOKEN`
 - `SONAR_HOST_URL` (e.g. `https://sonarcloud.io`)
-
-## Branch strategy used by this pipeline
-
-- `feature/**`, `develop` → **standard change**, auto-created and auto-closed.
-  Good for testing that ServiceNow ingests pipeline runs and creates change
-  records without any human in the loop.
-- `main` → **normal change**, created but left in a state requiring approval.
-  The `servicenow-devops-change` action polls and the GitHub Actions job will
-  sit "in progress" until someone approves (or rejects) the change in
-  ServiceNow. This is what you'd use to test change gating / approval
-  workflows.
 
 ## Local setup
 
@@ -57,48 +53,48 @@ npm run lint   # eslint
 npm start      # runs the app on :3000
 ```
 
-## Things worth testing once this is running
+## Checklist for confirming pipeline visibility in ServiceNow
 
-Beyond the 3 you listed (pipelines visible, security checks, change
-records), a few things that are easy to break and worth checking on the
-ServiceNow side:
+Since correlation here depends entirely on ServiceNow's discovery/polling
+of GitHub, these are the things most likely to trip up a "why isn't
+anything showing up" moment:
 
-1. **Pipeline job/stage names match `job-name` in the workflow** — ServiceNow
-   correlates by this string, so renaming a job in YAML without updating
-   ServiceNow config silently breaks correlation.
-2. **Change gating / policies** — try setting a change policy in ServiceNow
-   that blocks deploy if the security scan has any "high" or "critical"
-   findings, then intentionally push a build where the mock scan reports a
-   high finding, and confirm the pipeline is actually blocked.
-3. **Rejected change path** — reject a normal change on `main` once and
-   confirm the GitHub Actions job fails/stops rather than silently
-   continuing to deploy.
-4. **Multiple concurrent runs** — push to two branches close together and
-   confirm ServiceNow correlates each pipeline execution to the right change
-   record (build number / run number based correlation is where this
-   usually goes wrong).
-5. **Artifact + package registration → change record linkage** — confirm the
-   registered artifact actually shows up as related to the change record,
-   not just floating independently.
-6. **Freeze windows** — if you use change freeze/blackout windows in
-   ServiceNow, test a deploy attempt during one and confirm it's blocked.
-7. **Re-run/retry semantics** — re-run a failed GitHub Actions job and check
-   whether ServiceNow creates a duplicate change or correctly reuses/updates
-   the existing one (`attempt_number` in `get-change` is meant for this).
-8. **DORA-style metrics** — Change Velocity surfaces lead time / deployment
-   frequency; run a handful of pushes over a day or two so you have enough
-   data points to sanity check those numbers, not just single runs.
+1. **Repo is actually added under the GitHub tool in ServiceNow.** Having
+   the PAT configured at the tool level doesn't automatically discover
+   every repo the PAT has access to — check whether there's an explicit
+   "discover" or "import repository" step you still need to run.
+2. **Polling interval.** Pull-based discovery is not instant. Don't expect
+   a push to `main` to show up within seconds — check what interval
+   ServiceNow is configured to poll on.
+3. **Scope of what's pulled.** Confirm your plugin version surfaces GitHub
+   *Actions workflow runs* specifically, not just commits and pull
+   requests — this varies by ServiceNow DevOps Change Velocity plugin
+   version.
+4. **PAT scope/expiry.** Classic PATs need `repo` and `workflow` scopes at
+   minimum to see Actions runs; also check the PAT hasn't hit its expiry
+   date.
+5. **Branch coverage.** Confirm ServiceNow is configured to track the
+   branches you're pushing to (`main`, `develop`, `feature/*`) — some tool
+   configs restrict discovery to specific branches.
+6. **Multiple concurrent runs.** Push to two branches close together and
+   confirm ServiceNow's pipeline view correctly distinguishes each run
+   rather than merging or dropping one.
+
+## If you later want to add security checks / change records as real ServiceNow records
+
+That requires switching on the push model described above. At a high
+level: add `SN_DEVOPS_INTEGRATION_TOKEN`, `SN_INSTANCE_URL`, and
+`SN_ORCHESTRATION_TOOL_ID` as GitHub secrets (values come from the
+ServiceNow-side DevOps tool config, not your PAT), then add
+`ServiceNow/servicenow-devops-security-result`,
+`ServiceNow/servicenow-devops-sonar`, and `ServiceNow/servicenow-devops-change`
+steps to the relevant jobs. Happy to build that out when you're ready —
+it's a bigger change than this pull-only setup.
 
 ## Notes
 
-- The security scan and, until you set `SONAR_TOKEN`/`SONAR_HOST_URL`, the
-  Sonar scan are **mocked**. The ServiceNow-facing steps that send results
-  (`servicenow-devops-security-result`, `servicenow-devops-sonar`) are real
-  and wired up correctly — only the upstream scan producing the data is
-  fake. Swapping in a real scanner later shouldn't require changing the
-  ServiceNow-facing steps.
-- Action versions pinned (`@v6.1.0` etc.) reflect current major versions as
-  of writing — check the [ServiceNow GitHub org](https://github.com/ServiceNow)
-  for newer releases if something doesn't work as expected.
 - No cloud provider (AWS/Azure/GCP) is used anywhere — `deploy` is a shell
   echo you can replace with whatever you actually want to test against.
+- The security scan and (until `SONAR_TOKEN` is set) the Sonar scan are
+  mocked, purely to exercise the pipeline shape. Nothing here is sent to
+  ServiceNow directly; it's all discovered via polling.
