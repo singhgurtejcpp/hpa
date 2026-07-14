@@ -183,8 +183,8 @@ jobs:
           job-name: 'Create Standard Change (Auto)'
           change-request: |
             {
-              "setCloseCode": "true",
-              "autoCloseChange": true,
+              # "setCloseCode": "true",
+              # "autoCloseChange": true,
               "attributes": {
                 "short_description": "Automated deploy - ${{ github.ref_name }} - build ${{ github.run_number }}",
                 "description": "Standard change auto-created for non-prod branch ${{ github.ref_name }}.",
