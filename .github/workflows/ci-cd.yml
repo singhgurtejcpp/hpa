@@ -55,7 +55,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: coverage/- name: Register Artifact in ServiceNow
+          path: coverage/
+
+      - name: Register Artifact in ServiceNow
         uses: ServiceNow/servicenow-devops-register-artifact@v3.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
@@ -72,6 +74,7 @@ jobs:
                 "repositoryName": "${{ github.repository }}"
               }
             ]
+
   # ---------------------------------------------------------------------
   # 2. SECURITY SCANNING (mocked — swap in a real scanner later)
   # ---------------------------------------------------------------------
@@ -183,8 +186,8 @@ jobs:
           job-name: 'Create Standard Change (Auto)'
           change-request: |
             {
-              # "setCloseCode": "true",
-              # "autoCloseChange": true,
+              "setCloseCode": "true",
+              "autoCloseChange": true,
               "attributes": {
                 "short_description": "Automated deploy - ${{ github.ref_name }} - build ${{ github.run_number }}",
                 "description": "Standard change auto-created for non-prod branch ${{ github.ref_name }}.",
