@@ -15,12 +15,24 @@ name: CI/CD Pipeline
 #                                 API Access Policies > REST API Key)
 #   SN_INSTANCE_URL             - e.g. https://cppinvqa.service-now.com
 #   SN_ORCHESTRATION_TOOL_ID    - sys_id of the GitHub tool in DevOps > Tools
+#
+# THIS WORKFLOW ONLY VALIDATES AND REQUESTS A CHANGE — IT DOES NOT DEPLOY.
+# Deployment is deliberately a separate workflow (deploy.yml), triggered by
+# a PR merge to main, which checks the change request is in Scheduled state
+# before deploying. This mirrors real change management: approval and
+# actual implementation are decoupled, since a change can be approved ahead
+# of time but only implemented during its scheduled change window.
+#
+# - PR opened/updated targeting main  -> validates + creates a Normal change
+#   (pending approval), pipeline ends here.
+# - push to develop/feature/**        -> validates + creates a Standard
+#   change (auto-closed), pipeline ends here too.
 
 on:
-  push:
-    branches: [main, develop, 'feature/**']
   pull_request:
-    branches: [main, develop]
+    branches: [main]
+  push:
+    branches: [develop, 'feature/**']
   workflow_dispatch:
 
 env:
@@ -57,6 +69,13 @@ jobs:
           name: coverage-report
           path: coverage/
 
+      - name: Upload test results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+
       - name: Register Artifact in ServiceNow
         uses: ServiceNow/servicenow-devops-register-artifact@v3.1.0
         with:
@@ -74,6 +93,18 @@ jobs:
                 "repositoryName": "${{ github.repository }}"
               }
             ]
+
+      - name: Register Test Results in ServiceNow
+        if: always()
+        uses: ServiceNow/servicenow-devops-test-report@v6.0.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'Build'
+          xml-report-filename: test-results/junit.xml
+          test-summary-name: 'Unit Test Summary'
 
   # ---------------------------------------------------------------------
   # 2. SECURITY SCANNING (mocked — swap in a real scanner later)
@@ -139,6 +170,18 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
+      - name: Register Sonar Results in ServiceNow
+        uses: ServiceNow/servicenow-devops-sonar@v3.1.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          job-name: 'SonarQube Scan'
+          sonar-host-url: 'https://sonarcloud.io'
+          sonar-project-key: 'singhgurtejcpp_hpa'
+          sonar-organization: 'singhgurtejcpp'
+
       # SonarCloud itself doesn't produce a local report file — results live
       # entirely on sonarcloud.io. This step just writes a small pointer
       # file so an artifact exists here for parity with the other jobs.
@@ -171,7 +214,7 @@ jobs:
     name: Create Standard Change (Auto)
     runs-on: ubuntu-latest
     needs: [security-scan, sonar-scan]
-    if: github.ref != 'refs/heads/main'
+    if: github.event_name == 'push'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -203,48 +246,33 @@ jobs:
   #     in ServiceNow. The action polls until state changes.
   # ---------------------------------------------------------------------
   change-manual:
-    name: Create Normal Change (Manual Approval)
+    name: Create Normal Change (Pending Approval)
     runs-on: ubuntu-latest
     needs: [security-scan, sonar-scan]
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: ServiceNow Change - Normal (requires approval)
+      - name: ServiceNow Change - Normal (pending approval)
         uses: ServiceNow/servicenow-devops-change@v6.1.0
         with:
           devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
           instance-url: ${{ secrets.SN_INSTANCE_URL }}
           tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
           context-github: ${{ toJSON(github) }}
-          job-name: 'Create Normal Change (Manual Approval)'
+          job-name: 'Create Normal Change (Pending Approval)'
           change-request: |
             {
               "attributes": {
-                "short_description": "Production deploy - build ${{ github.run_number }}",
-                "description": "Normal change requiring manual approval for production deploy from main.",
-                "implementation_plan": "Automated CI/CD deploy via GitHub Actions once change is approved.",
+                "short_description": "Production deploy - PR #${{ github.event.pull_request.number }} - build ${{ github.run_number }}",
+                "description": "Normal change requesting approval for production deploy once PR #${{ github.event.pull_request.number }} is merged.",
+                "implementation_plan": "Deploy will run via separate deploy.yml workflow once this change reaches Scheduled state and the PR is merged.",
                 "backout_plan": "Redeploy previous successful production artifact.",
                 "test_plan": "Unit tests, security scan, and SonarQube scan executed and attached in pipeline."
               }
             }
-        # This step will pause the workflow (poll) until the change request
-        # is approved (or rejected) in ServiceNow.
-
-  # ---------------------------------------------------------------------
-  # 5. DEPLOY (runs only after the relevant change gate passes)
-  # ---------------------------------------------------------------------
-  deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
-    needs: [change-auto, change-manual]
-    if: always() && (needs.change-auto.result == 'success' || needs.change-manual.result == 'success')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Deploy (simulated)
-        run: |
-          echo "Deploying build ${{ github.run_number }} from branch ${{ github.ref_name }}"
-          echo "This is a simulated deploy step — replace with real deploy commands."
+        # This step creates the change request and returns immediately —
+        # it does NOT wait/poll for approval. The pipeline ends here.
+        # Approval and scheduling happen in ServiceNow on its own timeline;
+        # deploy.yml checks for Scheduled state separately, after merge.

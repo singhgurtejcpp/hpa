@@ -5,12 +5,13 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "jest --coverage",
+    "test": "jest --coverage --reporters=default --reporters=jest-junit",
     "lint": "eslint src test"
   },
   "devDependencies": {
     "eslint": "^8.57.0",
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "jest-junit": "^16.0.0"
   },
   "jest": {
     "collectCoverageFrom": [
@@ -21,5 +22,9 @@
       "text",
       "text-summary"
     ]
+  },
+  "jest-junit": {
+    "outputDirectory": "test-results",
+    "outputName": "junit.xml"
   }
 }

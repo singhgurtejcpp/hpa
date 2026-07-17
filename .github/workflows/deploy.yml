@@ -1,0 +1,138 @@
+name: Deploy
+
+# This workflow is deliberately separate from ci-cd.yml. ci-cd.yml validates
+# a PR and requests a change (Normal, pending approval) — it does not
+# deploy. This workflow only runs once that PR is actually merged to main,
+# and even then it does not deploy blindly: it first checks that the
+# associated change request has reached "Scheduled" state in ServiceNow,
+# which is the real-world signal that the change window has arrived and
+# implementation is authorized. Approval alone is not enough — a change can
+# be approved well ahead of its scheduled window.
+#
+# Requires the same three secrets as ci-cd.yml:
+#   SN_DEVOPS_INTEGRATION_TOKEN, SN_INSTANCE_URL, SN_ORCHESTRATION_TOOL_ID
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ---------------------------------------------------------------------
+  # 1. LOOK UP THE CHANGE REQUEST FOR THIS BUILD
+  # ---------------------------------------------------------------------
+  get-change:
+    name: Get Change Request
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    outputs:
+      change-request-number: ${{ steps.get-change.outputs.change-request-number }}
+    steps:
+      - name: ServiceNow Get Change
+        id: get-change
+        uses: ServiceNow/servicenow-devops-get-change@v6.3.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          change-details: '{"build_number":"${{ github.run_number }}","pipeline_name":"CI/CD Pipeline","stage_name":"Create Normal Change (Pending Approval)"}'
+
+      - name: Show change request found
+        run: |
+          echo "Change request: ${{ steps.get-change.outputs.change-request-number }}"
+
+  # ---------------------------------------------------------------------
+  # 2. CHECK THE CHANGE REQUEST IS IN "SCHEDULED" STATE
+  # ---------------------------------------------------------------------
+  # servicenow-devops-get-change confirms a change exists for this build,
+  # but doesn't expose its lifecycle state directly in a documented output.
+  # To gate on "Scheduled" specifically, this queries the change_request
+  # table directly via the Table API, using the same REST API Key token.
+  check-scheduled:
+    name: Verify Change Is Scheduled
+    runs-on: ubuntu-latest
+    needs: get-change
+    outputs:
+      is-scheduled: ${{ steps.check.outputs.is_scheduled }}
+    steps:
+      - name: Query change request state
+        id: check
+        env:
+          CHANGE_NUMBER: ${{ needs.get-change.outputs.change-request-number }}
+          SN_URL: ${{ secrets.SN_INSTANCE_URL }}
+          SN_TOKEN: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+        run: |
+          if [ -z "$CHANGE_NUMBER" ]; then
+            echo "No change request number found for this build — cannot proceed."
+            echo "is_scheduled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Querying state for change request: $CHANGE_NUMBER"
+
+          RESPONSE=$(curl -s -X GET \
+            "${SN_URL}/api/now/table/change_request?sysparm_query=number=${CHANGE_NUMBER}&sysparm_fields=state,number" \
+            -H "x-sn-apikey: ${SN_TOKEN}" \
+            -H "Accept: application/json")
+
+          echo "Raw response: $RESPONSE"
+
+          STATE=$(echo "$RESPONSE" | grep -o '"state":"[^"]*"' | head -1 | cut -d'"' -f4)
+          echo "Current state value: $STATE"
+
+          # NOTE: ServiceNow's numeric state values for change_request vary
+          # by change model/version. Common OOTB value for "Scheduled" is
+          # -1, but CONFIRM this against your instance's actual change
+          # model (Change Request > right-click State field > Show Choice
+          # List, or check an existing Scheduled change record directly)
+          # before relying on this check.
+          if [ "$STATE" == "-1" ]; then
+            echo "Change is Scheduled — deploy may proceed."
+            echo "is_scheduled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Change is NOT in Scheduled state (state=$STATE) — halting deploy."
+            echo "is_scheduled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------
+  # 3. DEPLOY — only if the change request is confirmed Scheduled
+  # ---------------------------------------------------------------------
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [get-change, check-scheduled]
+    if: needs.check-scheduled.outputs.is-scheduled == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy (simulated)
+        run: |
+          echo "Deploying build ${{ github.run_number }} — change ${{ needs.get-change.outputs.change-request-number }} is Scheduled."
+          echo "This is a simulated deploy step — replace with real deploy commands."
+
+  # ---------------------------------------------------------------------
+  # 4. UPDATE + CLOSE THE CHANGE REQUEST after successful deploy
+  # ---------------------------------------------------------------------
+  close-change:
+    name: Close Change Request
+    runs-on: ubuntu-latest
+    needs: [get-change, deploy]
+    if: needs.deploy.result == 'success'
+    steps:
+      - name: ServiceNow Update Change - Close
+        uses: ServiceNow/servicenow-devops-update-change@v6.3.0
+        with:
+          devops-integration-token: ${{ secrets.SN_DEVOPS_INTEGRATION_TOKEN }}
+          instance-url: ${{ secrets.SN_INSTANCE_URL }}
+          tool-id: ${{ secrets.SN_ORCHESTRATION_TOOL_ID }}
+          context-github: ${{ toJSON(github) }}
+          change-request-number: ${{ needs.get-change.outputs.change-request-number }}
+          change-request-details: |
+            {
+              "close_code": "successful",
+              "close_notes": "Deployed build ${{ github.run_number }} via GitHub Actions deploy.yml.",
+              "state": "3"
+            }
